@@ -125,4 +125,8 @@ impl StorageIterator for SsTableIterator {
         self.blk_iter = BlockIterator::create_and_seek_to_first(block);
         Ok(())
     }
+
+    fn num_active_iterators(&self) -> usize {
+        self.table.block_meta.len()
+    }
 }
