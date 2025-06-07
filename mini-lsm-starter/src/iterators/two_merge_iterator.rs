@@ -24,6 +24,9 @@ use super::StorageIterator;
 pub struct TwoMergeIterator<A: StorageIterator, B: StorageIterator> {
     a: A,
     b: B,
+    a_valid: bool,
+    b_valid: bool,
+    choose_a: bool,
     // Add fields as need
 }
 
@@ -33,7 +36,20 @@ impl<
 > TwoMergeIterator<A, B>
 {
     pub fn create(a: A, b: B) -> Result<Self> {
-        unimplemented!()
+        let a_valid = a.is_valid();
+        let b_valid = b.is_valid();
+        Ok(TwoMergeIterator {
+            a_valid,
+            b_valid,
+            choose_a: match (a_valid, b_valid) {
+                (true, true) => a.key() <= b.key(),
+                (true, false) => true,
+                (false, true) => false,
+                (false, false) => false,
+            },
+            a,
+            b,
+        })
     }
 }
 
@@ -45,18 +61,58 @@ impl<
     type KeyType<'a> = A::KeyType<'a>;
 
     fn key(&self) -> Self::KeyType<'_> {
-        unimplemented!()
+        if self.choose_a {
+            self.a.key()
+        } else {
+            self.b.key()
+        }
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        if self.choose_a {
+            self.a.value()
+        } else {
+            self.b.value()
+        }
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.a_valid || self.b_valid
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        match (self.a_valid, self.b_valid) {
+            (true, true) => {
+                if self.a.key() < self.b.key() {
+                    self.a.next()?;
+                    self.a_valid = self.a.is_valid();
+                } else if self.a.key() > self.b.key() {
+                    self.b.next()?;
+                    self.b_valid = self.b.is_valid();
+                } else {
+                    self.a.next()?;
+                    self.a_valid = self.a.is_valid();
+                    self.b.next()?;
+                    self.b_valid = self.b.is_valid();
+                }
+            }
+            (true, false) => {
+                self.a.next()?;
+                self.a_valid = self.a.is_valid();
+            }
+            (false, true) => {
+                self.b.next()?;
+                self.b_valid = self.b.is_valid();
+            }
+            (false, false) => {}
+        }
+        self.choose_a = match (self.a_valid, self.b_valid) {
+            (true, true) => self.a.key() <= self.b.key(),
+            (true, false) => true,
+            (false, true) => false,
+            (false, false) => false,
+        };
+
+        Ok(())
     }
 }

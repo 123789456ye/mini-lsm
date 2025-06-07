@@ -91,7 +91,7 @@ impl SsTableBuilder {
         let fp = FileObject::create(path.as_ref(), buf)?;
 
         Ok(SsTable {
-            id: id,
+            id,
             file: fp,
             first_key: self.meta.first().unwrap().first_key.clone(),
             last_key: self.meta.last().unwrap().last_key.clone(),

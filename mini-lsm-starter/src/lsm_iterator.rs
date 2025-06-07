@@ -15,27 +15,46 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
+use std::ops::Bound;
+
 use anyhow::{Error, Result, bail};
+use bytes::Bytes;
 
 use crate::{
-    iterators::{StorageIterator, merge_iterator::MergeIterator},
+    iterators::{
+        StorageIterator, merge_iterator::MergeIterator, two_merge_iterator::TwoMergeIterator,
+    },
     mem_table::MemTableIterator,
+    table::SsTableIterator,
 };
 
 /// Represents the internal type for an LSM iterator. This type will be changed across the course for multiple times.
-type LsmIteratorInner = MergeIterator<MemTableIterator>;
+type LsmIteratorInner =
+    TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>;
 
 pub struct LsmIterator {
     inner: LsmIteratorInner,
+    end_bound: Bound<Bytes>,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(iter: LsmIteratorInner) -> Result<Self> {
-        let mut it = Self { inner: iter };
+    pub(crate) fn new(iter: LsmIteratorInner, end_bound: Bound<Bytes>) -> Result<Self> {
+        let mut it = Self {
+            inner: iter,
+            end_bound,
+        };
         while it.is_valid() && it.value().is_empty() {
-            it.next();
+            it.next()?;
         }
         Ok(it)
+    }
+
+    fn check_end_bound(&self) -> bool {
+        match &self.end_bound {
+            Bound::Unbounded => true,
+            Bound::Included(b) => self.inner.key().raw_ref() <= b.as_ref(),
+            Bound::Excluded(b) => self.inner.key().raw_ref() < b.as_ref(),
+        }
     }
 }
 
@@ -43,7 +62,7 @@ impl StorageIterator for LsmIterator {
     type KeyType<'a> = &'a [u8];
 
     fn is_valid(&self) -> bool {
-        self.inner.is_valid()
+        self.inner.is_valid() && self.check_end_bound()
     }
 
     fn key(&self) -> &[u8] {
@@ -55,7 +74,7 @@ impl StorageIterator for LsmIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        self.inner.next();
+        self.inner.next()?;
         if self.inner.is_valid() && self.inner.value().is_empty() {
             return self.next();
         }

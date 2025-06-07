@@ -207,7 +207,7 @@ impl SsTable {
                 .map_err(|e| anyhow!("{}", e))?;
             Ok(blk)
         } else {
-            return self.read_block(block_idx);
+            self.read_block(block_idx)
         }
     }
 

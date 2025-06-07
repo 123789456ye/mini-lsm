@@ -100,7 +100,7 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     }
 
     fn is_valid(&self) -> bool {
-        if let None = self.current {
+        if self.current.is_none() {
             return false;
         }
         self.current.as_ref().unwrap().1.is_valid()
