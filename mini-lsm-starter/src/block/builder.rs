@@ -33,12 +33,12 @@ pub struct BlockBuilder {
 
 impl BlockBuilder {
     /// Creates a new block builder.
-    pub fn new(block_size: usize) -> Self {
+    pub fn new(block_size: usize, first_key: KeyVec) -> Self {
         Self {
             offsets: Vec::new(),
             data: Vec::new(),
             block_size,
-            first_key: KeyVec::new(),
+            first_key,
         }
     }
 
@@ -46,12 +46,15 @@ impl BlockBuilder {
     /// You may find the `bytes::BufMut` trait useful for manipulating binary data.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        let key_bytes = key.raw_ref();
+        let overlap = Self::overlap(self.first_key.raw_ref(), key.raw_ref());
+
+        let key_bytes = &key.raw_ref()[overlap..];
         let key_len = key_bytes.len() as u16;
         let value_len = value.len() as u16;
 
-        let cur_size = self.data.len() + self.offsets.len() * 2 + 2;
-        let entry_size = 2 + key_len as usize + 2 + value_len as usize;
+        let cur_size = self.data.len() + self.offsets.len() + 2;
+        //let cur_size = self.data.len() + self.offsets.len() * 2 + 2;
+        let entry_size = 2 + 2 + key_len as usize + 2 + value_len as usize;
 
         if cur_size + entry_size > self.block_size && !self.is_empty() {
             return false;
@@ -59,12 +62,31 @@ impl BlockBuilder {
 
         self.offsets.push(self.data.len() as u16);
 
-        self.data.extend_from_slice(&key_len.to_le_bytes());
+        self.data.extend_from_slice(&(overlap as u16).to_le_bytes());
+        self.data
+            .extend_from_slice(&((key.len() - overlap) as u16).to_le_bytes());
         self.data.extend_from_slice(key_bytes);
+
+        //self.data.extend_from_slice(&key_len.to_le_bytes());
+        //self.data.extend_from_slice(key_bytes);
         self.data.extend_from_slice(&value_len.to_le_bytes());
         self.data.extend_from_slice(value);
 
         true
+    }
+
+    fn overlap(first_key: &[u8], key: &[u8]) -> usize {
+        let mut l = 0;
+        loop {
+            if l >= first_key.len() || l >= key.len() {
+                break;
+            }
+            if first_key[l] != key[l] {
+                break;
+            }
+            l += 1;
+        }
+        l
     }
 
     /// Check if there is no key-value pair in the block.

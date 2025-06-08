@@ -85,7 +85,7 @@ impl BlockIterator {
             return;
         }
         let offset = self.block.offsets[0] as usize;
-        let (key, val_range) = Self::decode_entry(&self.block.data, offset);
+        let (key, val_range) = self.decode_entry(&self.block.data, offset);
 
         self.key = key;
         self.value_range = val_range;
@@ -101,7 +101,7 @@ impl BlockIterator {
             return;
         }
         let offset = self.block.offsets[self.idx] as usize;
-        let (key, value_range) = Self::decode_entry(&self.block.data, offset);
+        let (key, value_range) = self.decode_entry(&self.block.data, offset);
         self.key = key;
         self.value_range = value_range;
     }
@@ -116,7 +116,7 @@ impl BlockIterator {
         while l < r {
             let m = (l + r) / 2;
             let offset = self.block.offsets[m] as usize;
-            let (mid_key, _) = Self::decode_entry(&self.block.data, offset);
+            let (mid_key, _) = self.decode_entry(&self.block.data, offset);
             match mid_key.raw_ref().cmp(key.raw_ref()) {
                 std::cmp::Ordering::Less => {
                     l = m + 1;
@@ -128,7 +128,7 @@ impl BlockIterator {
         }
         if l < self.block.offsets.len() {
             let offset = self.block.offsets[l] as usize;
-            let (key, val_range) = Self::decode_entry(&self.block.data, offset);
+            let (key, val_range) = self.decode_entry(&self.block.data, offset);
             self.idx = l;
             self.key = key;
             self.value_range = val_range;
@@ -139,14 +139,20 @@ impl BlockIterator {
         }
     }
 
-    fn decode_entry(data: &[u8], offset: usize) -> (KeyVec, (usize, usize)) {
-        let klen = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize;
-        let key_start = offset + 2;
-        let key_end = key_start + klen;
-        let vlen = u16::from_le_bytes([data[key_end], data[key_end + 1]]) as usize;
-        let value_start = key_end + 2;
+    fn decode_entry(&self, data: &[u8], offset: usize) -> (KeyVec, (usize, usize)) {
+        let overlap = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize;
+        let rest_len = u16::from_le_bytes([data[offset + 2], data[offset + 3]]) as usize;
+        let rest_start = offset + 4;
+        let rest_end = rest_start + rest_len;
+
+        let mut full_key = self.first_key.raw_ref()[..overlap].to_vec();
+        full_key.extend_from_slice(&data[rest_start..rest_end]);
+
+        let vlen_offset = rest_end;
+        let vlen = u16::from_le_bytes([data[vlen_offset], data[vlen_offset + 1]]) as usize;
+        let value_start = vlen_offset + 2;
         let value_end = value_start + vlen;
-        let key = KeyVec::from_vec(data[key_start..key_end].to_vec());
-        (key, (value_start, value_end))
+
+        (KeyVec::from_vec(full_key), (value_start, value_end))
     }
 }

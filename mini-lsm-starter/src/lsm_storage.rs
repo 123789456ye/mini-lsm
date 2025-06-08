@@ -505,6 +505,13 @@ impl LsmStorageInner {
         let mut sst_iters = Vec::new();
         for sst_id in &snapshot.l0_sstables {
             let sst = snapshot.sstables[sst_id].clone();
+            if let Some(bloom) = &sst.bloom {
+                if let Bound::Included(key) | Bound::Excluded(key) = _lower {
+                    if !bloom.may_contain(farmhash::fingerprint32(key)) {
+                        continue;
+                    }
+                }
+            }
             if !self.range_overlap(
                 _lower,
                 _upper,

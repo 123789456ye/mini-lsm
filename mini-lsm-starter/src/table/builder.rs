@@ -22,6 +22,8 @@ use anyhow::Result;
 use bytes::{BufMut, Bytes};
 
 use super::{BlockMeta, SsTable};
+use crate::key::Key;
+use crate::table::bloom::Bloom;
 use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache, table::FileObject};
 
 use crate::table::KeyBytes;
@@ -34,18 +36,20 @@ pub struct SsTableBuilder {
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
+    key_hashes: Vec<u32>,
 }
 
 impl SsTableBuilder {
     /// Create a builder based on target block size.
     pub fn new(block_size: usize) -> Self {
         SsTableBuilder {
-            builder: BlockBuilder::new(block_size),
+            builder: BlockBuilder::new(block_size, Key::from_vec(Vec::new())),
             first_key: Vec::new(),
             last_key: Vec::new(),
             data: Vec::new(),
             meta: Vec::new(),
             block_size,
+            key_hashes: Vec::new(),
         }
     }
 
@@ -63,6 +67,7 @@ impl SsTableBuilder {
             self.first_key = Bytes::copy_from_slice(key.raw_ref()).into();
         }
         self.last_key = Bytes::copy_from_slice(key.raw_ref()).into();
+        self.key_hashes.push(farmhash::fingerprint32(key.raw_ref()));
     }
 
     /// Get the estimated size of the SSTable.
@@ -85,8 +90,15 @@ impl SsTableBuilder {
         let mut buf = self.data;
         let meta_off = buf.len();
         BlockMeta::encode_block_meta(&self.meta, &mut buf);
-
         buf.put_u32(meta_off as u32);
+
+        let bloom = Bloom::build_from_key_hashes(
+            &self.key_hashes,
+            Bloom::bloom_bits_per_key(self.key_hashes.len(), 0.01),
+        );
+        let bloom_off = buf.len();
+        bloom.encode(&mut buf);
+        buf.put_u32(bloom_off as u32);
 
         let fp = FileObject::create(path.as_ref(), buf)?;
 
@@ -98,13 +110,16 @@ impl SsTableBuilder {
             block_meta: self.meta,
             block_meta_offset: meta_off,
             block_cache,
-            bloom: None,
+            bloom: Some(bloom),
             max_ts: 0,
         })
     }
 
     fn flush_block(&mut self) {
-        let block = std::mem::replace(&mut self.builder, BlockBuilder::new(self.block_size));
+        let block = std::mem::replace(
+            &mut self.builder,
+            BlockBuilder::new(self.block_size, Key::from_vec(self.first_key.clone())),
+        );
         let encoded_block = block.build().encode();
         self.meta.push(BlockMeta {
             offset: self.data.len(),
