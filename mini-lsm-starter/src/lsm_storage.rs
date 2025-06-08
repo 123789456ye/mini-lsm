@@ -31,6 +31,7 @@ use crate::compact::{
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
 use crate::iterators::StorageIterator;
+use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
@@ -338,6 +339,29 @@ impl LsmStorageInner {
             }
         }
 
+        let mut l1_sst = Vec::new();
+        for table in self.state.read().levels[0].1.iter() {
+            let table = self.state.read().sstables[table].clone();
+            if table.bloom.is_some()
+                && !table
+                    .bloom
+                    .as_ref()
+                    .unwrap()
+                    .may_contain(farmhash::fingerprint32(_key))
+            {
+                continue;
+            }
+            l1_sst.push(table.clone());
+        }
+        let l1_iter =
+            SstConcatIterator::create_and_seek_to_key(l1_sst, KeySlice::from_slice(_key))?;
+        if l1_iter.is_valid() && l1_iter.key().raw_ref() == _key {
+            if l1_iter.value().is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(Bytes::copy_from_slice(l1_iter.value())));
+        }
+
         Ok(None)
     }
 
@@ -538,7 +562,15 @@ impl LsmStorageInner {
         }
         let sst_merge = MergeIterator::create(sst_iters);
 
+        let mut l1_sst = Vec::new();
+        for sst_id in snapshot.levels[0].1.iter() {
+            l1_sst.push(snapshot.sstables[sst_id].clone());
+        }
+        let l1_iter = SstConcatIterator::create_and_seek_to_first(l1_sst)?;
+
         let merge_iter = TwoMergeIterator::create(mem_merge, sst_merge)?;
+        let merge_iter = TwoMergeIterator::create(merge_iter, l1_iter)?;
+
         let end_bound = match _upper {
             Bound::Included(b) => Bound::Included(Bytes::copy_from_slice(b)),
             Bound::Excluded(b) => Bound::Excluded(Bytes::copy_from_slice(b)),

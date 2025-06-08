@@ -46,6 +46,12 @@ impl BlockIterator {
         }
     }
 
+    fn fetch_first_key(&mut self) {
+        if self.first_key.is_empty() {
+            (self.first_key, ..) = self.decode_entry(&self.block.data, 0);
+        }
+    }
+
     /// Creates a block iterator and seek to the first entry.
     pub fn create_and_seek_to_first(block: Arc<Block>) -> Self {
         let mut it = BlockIterator::new(block);
@@ -84,6 +90,7 @@ impl BlockIterator {
             self.idx = 0;
             return;
         }
+        self.fetch_first_key();
         let offset = self.block.offsets[0] as usize;
         let (key, val_range) = self.decode_entry(&self.block.data, offset);
 
@@ -110,6 +117,8 @@ impl BlockIterator {
     /// Note: You should assume the key-value pairs in the block are sorted when being added by
     /// callers.
     pub fn seek_to_key(&mut self, key: KeySlice) {
+        self.fetch_first_key();
+
         let mut l = 0;
         let mut r = self.block.offsets.len();
 

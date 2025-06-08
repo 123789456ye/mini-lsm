@@ -46,7 +46,11 @@ impl BlockBuilder {
     /// You may find the `bytes::BufMut` trait useful for manipulating binary data.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        let overlap = Self::overlap(self.first_key.raw_ref(), key.raw_ref());
+        let overlap = if self.offsets.is_empty() {
+            0
+        } else {
+            Self::overlap(self.first_key.raw_ref(), key.raw_ref())
+        };
 
         let key_bytes = &key.raw_ref()[overlap..];
         let key_len = key_bytes.len() as u16;
