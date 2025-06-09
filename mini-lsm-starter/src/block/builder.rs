@@ -33,12 +33,12 @@ pub struct BlockBuilder {
 
 impl BlockBuilder {
     /// Creates a new block builder.
-    pub fn new(block_size: usize, first_key: KeyVec) -> Self {
+    pub fn new(block_size: usize) -> Self {
         Self {
             offsets: Vec::new(),
             data: Vec::new(),
             block_size,
-            first_key,
+            first_key: KeyVec::new(),
         }
     }
 
@@ -75,6 +75,10 @@ impl BlockBuilder {
         //self.data.extend_from_slice(key_bytes);
         self.data.extend_from_slice(&value_len.to_le_bytes());
         self.data.extend_from_slice(value);
+
+        if self.first_key.is_empty() {
+            self.first_key = key.to_key_vec();
+        }
 
         true
     }

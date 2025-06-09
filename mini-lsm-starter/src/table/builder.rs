@@ -43,7 +43,7 @@ impl SsTableBuilder {
     /// Create a builder based on target block size.
     pub fn new(block_size: usize) -> Self {
         SsTableBuilder {
-            builder: BlockBuilder::new(block_size, Key::from_vec(Vec::new())),
+            builder: BlockBuilder::new(block_size),
             first_key: Vec::new(),
             last_key: Vec::new(),
             data: Vec::new(),
@@ -116,10 +116,7 @@ impl SsTableBuilder {
     }
 
     fn flush_block(&mut self) {
-        let block = std::mem::replace(
-            &mut self.builder,
-            BlockBuilder::new(self.block_size, Key::from_vec(self.first_key.clone())),
-        );
+        let block = std::mem::replace(&mut self.builder, BlockBuilder::new(self.block_size));
         let encoded_block = block.build().encode();
         self.meta.push(BlockMeta {
             offset: self.data.len(),
