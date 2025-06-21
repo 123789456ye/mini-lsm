@@ -36,6 +36,7 @@ use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -276,8 +277,10 @@ impl LsmStorageInner {
         };
         let new_ssts = self.compact(&compaction_task)?;
         {
+            let state_lock = self.state_lock.lock();
             let mut guard = self.state.write();
             let mut state = guard.as_ref().clone();
+            let mut new_sst_ids = Vec::new();
 
             for sst in state.l0_sstables.clone().iter() {
                 state.sstables.remove(sst);
@@ -289,11 +292,26 @@ impl LsmStorageInner {
             state.levels[0].1.clear();
 
             for sst in new_ssts {
+                new_sst_ids.push(sst.sst_id());
                 state.levels[0].1.push(sst.sst_id());
                 state.sstables.insert(sst.sst_id(), sst);
             }
 
             *guard = Arc::new(state);
+
+            self.manifest.as_ref().unwrap().add_record(
+                &state_lock,
+                ManifestRecord::Compaction(compaction_task, new_sst_ids.clone()),
+            )?;
+            self.sync_dir()?;
+        }
+
+        for sst in snapshot
+            .l0_sstables
+            .iter()
+            .chain(snapshot.levels[0].1.iter())
+        {
+            std::fs::remove_file(self.path_of_sst(*sst))?;
         }
 
         Ok(())
@@ -316,19 +334,26 @@ impl LsmStorageInner {
         {
             let state_lock = self.state_lock.lock();
             let mut snapshot = self.state.read().as_ref().clone();
+            let mut new_sst_ids = Vec::new();
             for sst in new_sstables {
+                new_sst_ids.push(sst.sst_id());
                 snapshot.sstables.insert(sst.sst_id(), sst);
             }
             // in_recovery?
             let (mut snapshot, remove_files) = self
                 .compaction_controller
-                .apply_compaction_result(&snapshot, &task, &output, true);
+                .apply_compaction_result(&snapshot, &task, &output, false);
             for file in remove_files {
                 snapshot.sstables.remove(&file);
                 std::fs::remove_file(self.path_of_sst(file))?;
             }
             let mut state = self.state.write();
             *state = Arc::new(snapshot);
+            self.manifest
+                .as_ref()
+                .unwrap()
+                .add_record(&state_lock, ManifestRecord::Compaction(task, new_sst_ids))?;
+            self.sync_dir()?;
         }
         self.dump_structure();
 
