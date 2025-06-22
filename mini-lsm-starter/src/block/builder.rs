@@ -33,12 +33,12 @@ pub struct BlockBuilder {
 
 impl BlockBuilder {
     /// Creates a new block builder.
-    pub fn new(block_size: usize, first_key: KeyVec) -> Self {
+    pub fn new(block_size: usize) -> Self {
         Self {
             offsets: Vec::new(),
             data: Vec::new(),
             block_size,
-            first_key,
+            first_key: KeyVec::new(),
         }
     }
 
@@ -46,7 +46,11 @@ impl BlockBuilder {
     /// You may find the `bytes::BufMut` trait useful for manipulating binary data.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        let overlap = Self::overlap(self.first_key.raw_ref(), key.raw_ref());
+        let overlap = if self.offsets.is_empty() {
+            0
+        } else {
+            Self::overlap(self.first_key.raw_ref(), key.raw_ref())
+        };
 
         let key_bytes = &key.raw_ref()[overlap..];
         let key_len = key_bytes.len() as u16;
@@ -71,6 +75,10 @@ impl BlockBuilder {
         //self.data.extend_from_slice(key_bytes);
         self.data.extend_from_slice(&value_len.to_le_bytes());
         self.data.extend_from_slice(value);
+
+        if self.first_key.is_empty() {
+            self.first_key = key.to_key_vec();
+        }
 
         true
     }

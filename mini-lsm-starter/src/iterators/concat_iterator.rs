@@ -35,11 +35,58 @@ pub struct SstConcatIterator {
 
 impl SstConcatIterator {
     pub fn create_and_seek_to_first(sstables: Vec<Arc<SsTable>>) -> Result<Self> {
-        unimplemented!()
+        if sstables.is_empty() {
+            return Ok(Self {
+                current: None,
+                next_sst_idx: 0,
+                sstables,
+            });
+        }
+        Ok(Self {
+            current: Some(SsTableIterator::create_and_seek_to_first(sstables[0].clone()).unwrap()),
+            next_sst_idx: 1,
+            sstables,
+        })
     }
 
     pub fn create_and_seek_to_key(sstables: Vec<Arc<SsTable>>, key: KeySlice) -> Result<Self> {
-        unimplemented!()
+        let idx: usize = sstables
+            .partition_point(|table| table.first_key().as_key_slice() <= key)
+            .saturating_sub(1);
+        if idx >= sstables.len() {
+            return Ok(Self {
+                current: None,
+                next_sst_idx: sstables.len(),
+                sstables,
+            });
+        }
+        let mut iter = Self {
+            current: Some(SsTableIterator::create_and_seek_to_key(
+                sstables[idx].clone(),
+                key,
+            )?),
+            next_sst_idx: idx + 1,
+            sstables,
+        };
+        iter.move_until_valid()?;
+        Ok(iter)
+    }
+
+    fn move_until_valid(&mut self) -> Result<()> {
+        while let Some(iter) = self.current.as_mut() {
+            if iter.is_valid() {
+                break;
+            }
+            if self.next_sst_idx >= self.sstables.len() {
+                self.current = None;
+            } else {
+                self.current = Some(SsTableIterator::create_and_seek_to_first(
+                    self.sstables[self.next_sst_idx].clone(),
+                )?);
+                self.next_sst_idx += 1;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -47,19 +94,25 @@ impl StorageIterator for SstConcatIterator {
     type KeyType<'a> = KeySlice<'a>;
 
     fn key(&self) -> KeySlice {
-        unimplemented!()
+        self.current.as_ref().unwrap().key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.current.as_ref().unwrap().value()
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        if let Some(current) = &self.current {
+            self.current.as_ref().unwrap().is_valid()
+        } else {
+            false
+        }
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        self.current.as_mut().unwrap().next()?;
+        self.move_until_valid()?;
+        Ok(())
     }
 
     fn num_active_iterators(&self) -> usize {
