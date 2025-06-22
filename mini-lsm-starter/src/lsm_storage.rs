@@ -322,6 +322,12 @@ impl LsmStorageInner {
         let manifest;
 
         if !manifest_path.exists() {
+            if options.enable_wal {
+                state.memtable = Arc::new(MemTable::create_with_wal(
+                    state.memtable.id(),
+                    Self::path_of_wal_static(path, state.memtable.id()),
+                )?);
+            }
             manifest = Manifest::create(manifest_path)?;
             manifest.add_record_when_init(ManifestRecord::NewMemtable(state.memtable.id()))?;
         } else {
@@ -330,6 +336,7 @@ impl LsmStorageInner {
             for record in records {
                 match record {
                     ManifestRecord::Compaction(task, output) => {
+                        println!("{:#?}", task);
                         let (new_state, _) = compaction_controller
                             .apply_compaction_result(&state, &task, &output, true);
                         state = new_state;
@@ -379,7 +386,21 @@ impl LsmStorageInner {
                 }
             }
 
-            state.memtable = Arc::new(MemTable::create(next_sst_id));
+            if options.enable_wal {
+                for id in memtables.iter() {
+                    let memtable =
+                        MemTable::recover_from_wal(*id, Self::path_of_wal_static(path, *id))?;
+                    if !memtable.is_empty() {
+                        state.imm_memtables.insert(0, Arc::new(memtable));
+                    }
+                }
+                state.memtable = Arc::new(MemTable::create_with_wal(
+                    next_sst_id,
+                    Self::path_of_wal_static(path, next_sst_id),
+                )?);
+            } else {
+                state.memtable = Arc::new(MemTable::create(next_sst_id));
+            }
             recm.add_record_when_init(ManifestRecord::NewMemtable(state.memtable.id()))?;
             next_sst_id += 1;
             manifest = recm;
@@ -403,7 +424,7 @@ impl LsmStorageInner {
     }
 
     pub fn sync(&self) -> Result<()> {
-        unimplemented!()
+        self.state.read().memtable.sync_wal()
     }
 
     pub fn add_compaction_filter(&self, compaction_filter: CompactionFilter) {
