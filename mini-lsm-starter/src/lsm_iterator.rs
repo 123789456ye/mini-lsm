@@ -52,11 +52,29 @@ impl LsmIterator {
         Ok(it)
     }
 
+    fn append_max_ts_to_key(user_key: &[u8]) -> Bytes {
+        let mut buf = Bytes::copy_from_slice(user_key).to_vec();
+        buf.extend_from_slice(&u64::MAX.to_le_bytes());
+        Bytes::from(buf)
+    }
+
+    fn strip_ts_from_key(internal_key: &[u8]) -> &[u8] {
+        if internal_key.len() < 8 {
+            &internal_key
+        } else {
+            &internal_key[..internal_key.len() - 8]
+        }
+    }
+
     fn check_end_bound(&self) -> bool {
         match &self.end_bound {
             Bound::Unbounded => true,
-            Bound::Included(b) => self.inner.key().raw_ref() <= b.as_ref(),
-            Bound::Excluded(b) => self.inner.key().raw_ref() < b.as_ref(),
+            Bound::Included(b) => {
+                self.inner.key().key_ref() <= Self::append_max_ts_to_key(b).as_ref()
+            }
+            Bound::Excluded(b) => {
+                self.inner.key().key_ref() < Self::append_max_ts_to_key(b).as_ref()
+            }
         }
     }
 }
@@ -69,7 +87,7 @@ impl StorageIterator for LsmIterator {
     }
 
     fn key(&self) -> &[u8] {
-        self.inner.key().raw_ref()
+        Self::strip_ts_from_key(self.inner.key().key_ref())
     }
 
     fn value(&self) -> &[u8] {

@@ -56,10 +56,12 @@ impl BlockMeta {
         buf.put_u32_le(block_meta.len() as u32);
         for meta in block_meta {
             buf.put_u32_le(meta.offset as u32);
-            buf.put_u16_le(meta.first_key.len() as u16);
-            buf.put(meta.first_key.raw_ref());
-            buf.put_u16_le(meta.last_key.len() as u16);
-            buf.put(meta.last_key.raw_ref());
+            buf.put_u16_le(meta.first_key.key_len() as u16);
+            buf.put(meta.first_key.key_ref());
+            buf.put_u64_le(meta.first_key.ts());
+            buf.put_u16_le(meta.last_key.key_len() as u16);
+            buf.put(meta.last_key.key_ref());
+            buf.put_u64_le(meta.last_key.ts());
         }
     }
 
@@ -70,10 +72,17 @@ impl BlockMeta {
 
         for i in 0..len {
             let offset = buf.get_u32_le() as usize;
+
             let first_len = buf.get_u16_le();
-            let first_key = KeyBytes::from_bytes(buf.copy_to_bytes(first_len as usize));
+            let first_key_bytes = buf.copy_to_bytes(first_len as usize);
+            let first_ts = buf.get_u64_le();
+            let first_key = KeyBytes::from_bytes_with_ts(first_key_bytes, first_ts);
+
             let last_len = buf.get_u16_le();
-            let last_key = KeyBytes::from_bytes(buf.copy_to_bytes(last_len as usize));
+            let last_key_bytes = buf.copy_to_bytes(last_len as usize);
+            let last_ts = buf.get_u64_le();
+            let last_key = KeyBytes::from_bytes_with_ts(last_key_bytes, last_ts);
+
             block_meta.push(BlockMeta {
                 offset,
                 first_key,

@@ -22,7 +22,7 @@ use anyhow::Result;
 use bytes::{BufMut, Bytes};
 
 use super::{BlockMeta, SsTable};
-use crate::key::Key;
+use crate::key::{Key, KeyVec};
 use crate::table::bloom::Bloom;
 use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache, table::FileObject};
 
@@ -31,8 +31,8 @@ use crate::table::KeyBytes;
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
     builder: BlockBuilder,
-    first_key: Vec<u8>,
-    last_key: Vec<u8>,
+    first_key: KeyVec,
+    last_key: KeyVec,
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
@@ -44,8 +44,8 @@ impl SsTableBuilder {
     pub fn new(block_size: usize) -> Self {
         SsTableBuilder {
             builder: BlockBuilder::new(block_size),
-            first_key: Vec::new(),
-            last_key: Vec::new(),
+            first_key: KeyVec::new(),
+            last_key: KeyVec::new(),
             data: Vec::new(),
             meta: Vec::new(),
             block_size,
@@ -59,15 +59,15 @@ impl SsTableBuilder {
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
         if self.first_key.is_empty() {
-            self.first_key = Bytes::copy_from_slice(key.raw_ref()).into();
+            KeyVec::set_from_slice(&mut self.first_key, key);
         }
         if !self.builder.add(key, value) {
             self.flush_block();
             self.builder.add(key, value);
-            self.first_key = Bytes::copy_from_slice(key.raw_ref()).into();
+            KeyVec::set_from_slice(&mut self.first_key, key);
         }
-        self.last_key = Bytes::copy_from_slice(key.raw_ref()).into();
-        self.key_hashes.push(farmhash::fingerprint32(key.raw_ref()));
+        KeyVec::set_from_slice(&mut self.last_key, key);
+        self.key_hashes.push(farmhash::fingerprint32(key.key_ref()));
     }
 
     /// Get the estimated size of the SSTable.
@@ -120,8 +120,8 @@ impl SsTableBuilder {
         let encoded_block = block.build().encode();
         self.meta.push(BlockMeta {
             offset: self.data.len(),
-            first_key: KeyBytes::from_bytes(self.first_key.clone().into()),
-            last_key: KeyBytes::from_bytes(self.last_key.clone().into()),
+            first_key: self.first_key.clone().into_key_bytes(),
+            last_key: self.last_key.clone().into_key_bytes(),
         });
         self.data.append(&mut encoded_block.to_vec());
     }

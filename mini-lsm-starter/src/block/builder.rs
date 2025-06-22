@@ -49,16 +49,16 @@ impl BlockBuilder {
         let overlap = if self.offsets.is_empty() {
             0
         } else {
-            Self::overlap(self.first_key.raw_ref(), key.raw_ref())
+            Self::overlap(self.first_key.key_ref(), key.key_ref())
         };
 
-        let key_bytes = &key.raw_ref()[overlap..];
+        let key_bytes = &key.key_ref()[overlap..];
         let key_len = key_bytes.len() as u16;
         let value_len = value.len() as u16;
 
         let cur_size = self.data.len() + self.offsets.len() + 2;
         //let cur_size = self.data.len() + self.offsets.len() * 2 + 2;
-        let entry_size = 2 + 2 + key_len as usize + 2 + value_len as usize;
+        let entry_size = 2 + 2 + key_len as usize + 2 + value_len as usize + 8;
 
         if cur_size + entry_size > self.block_size && !self.is_empty() {
             return false;
@@ -68,8 +68,9 @@ impl BlockBuilder {
 
         self.data.extend_from_slice(&(overlap as u16).to_le_bytes());
         self.data
-            .extend_from_slice(&((key.len() - overlap) as u16).to_le_bytes());
+            .extend_from_slice(&((key.key_len() - overlap) as u16).to_le_bytes());
         self.data.extend_from_slice(key_bytes);
+        self.data.extend_from_slice(&key.ts().to_le_bytes());
 
         //self.data.extend_from_slice(&key_len.to_le_bytes());
         //self.data.extend_from_slice(key_bytes);
