@@ -137,21 +137,30 @@ impl LsmStorageInner {
         let mut builder = None;
         let mut new_sst = Vec::new();
 
+        let mut prev_key: Option<Vec<u8>> = None;
         while iter.is_valid() {
             if builder.is_none() {
                 builder = Some(SsTableBuilder::new(self.options.block_size));
             }
             let builder_inner = builder.as_mut().unwrap();
-            if compact_to_bottom_level {
+            /*if compact_to_bottom_level {
                 if !iter.value().is_empty() {
                     builder_inner.add(iter.key(), iter.value());
                 }
             } else {
                 builder_inner.add(iter.key(), iter.value());
-            }
-            iter.next()?;
+            }*/
+            builder_inner.add(iter.key(), iter.value());
 
-            if builder_inner.estimated_size() >= self.options.target_sst_size {
+            let current_key = iter.key().into_inner();
+
+            let should_split = if let Some(prev) = &prev_key {
+                prev != current_key
+            } else {
+                false
+            };
+
+            if should_split && builder_inner.estimated_size() >= self.options.target_sst_size {
                 let sst_id = self.next_sst_id();
                 let builder = builder.take().unwrap();
                 let sst = Arc::new(builder.build(
@@ -161,6 +170,9 @@ impl LsmStorageInner {
                 )?);
                 new_sst.push(sst);
             }
+
+            prev_key = Some(current_key.to_vec());
+            iter.next()?;
         }
         if let Some(builder) = builder {
             let sst_id = self.next_sst_id(); // lock dropped here
@@ -355,7 +367,6 @@ impl LsmStorageInner {
                 .add_record(&state_lock, ManifestRecord::Compaction(task, new_sst_ids))?;
             self.sync_dir()?;
         }
-        self.dump_structure();
 
         Ok(())
     }
