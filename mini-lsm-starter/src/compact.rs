@@ -134,48 +134,62 @@ impl LsmStorageInner {
         mut iter: impl for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
         compact_to_bottom_level: bool,
     ) -> Result<Vec<Arc<SsTable>>> {
-        let mut builder = None;
+        let mut builder = Some(SsTableBuilder::new(self.options.block_size));
         let mut new_sst = Vec::new();
 
         let mut prev_key: Option<Vec<u8>> = None;
+        let mut same_prev = false;
+        let mut first_key = true;
+        let watermark = self.mvcc().watermark();
+
         while iter.is_valid() {
-            if builder.is_none() {
-                builder = Some(SsTableBuilder::new(self.options.block_size));
-            }
-            let builder_inner = builder.as_mut().unwrap();
-            /*if compact_to_bottom_level {
-                if !iter.value().is_empty() {
-                    builder_inner.add(iter.key(), iter.value());
-                }
-            } else {
-                builder_inner.add(iter.key(), iter.value());
-            }*/
-            builder_inner.add(iter.key(), iter.value());
+            let mut flag_add = true;
 
             let current_key = iter.key().into_inner();
-
-            let should_split = if let Some(prev) = &prev_key {
-                prev != current_key
+            same_prev = if let Some(prev) = &prev_key {
+                prev == current_key
             } else {
                 false
             };
 
-            if should_split && builder_inner.estimated_size() >= self.options.target_sst_size {
-                let sst_id = self.next_sst_id();
-                let builder = builder.take().unwrap();
-                let sst = Arc::new(builder.build(
-                    sst_id,
-                    Some(self.block_cache.clone()),
-                    self.path_of_sst(sst_id),
-                )?);
-                new_sst.push(sst);
+            if !same_prev {
+                first_key = true;
+            }
+
+            if iter.key().ts() <= watermark {
+                if compact_to_bottom_level && iter.value().is_empty() && first_key {
+                    flag_add = false;
+                    first_key = false;
+                } else if !first_key {
+                    flag_add = false;
+                }
+                first_key = false;
+            }
+
+            if flag_add {
+                let builder_inner = builder.as_mut().unwrap();
+
+                if !same_prev && builder_inner.estimated_size() >= self.options.target_sst_size {
+                    let sst_id = self.next_sst_id();
+                    let old_builder = builder.take().unwrap();
+                    let sst = Arc::new(old_builder.build(
+                        sst_id,
+                        Some(self.block_cache.clone()),
+                        self.path_of_sst(sst_id),
+                    )?);
+                    new_sst.push(sst);
+                    builder = Some(SsTableBuilder::new(self.options.block_size));
+                }
+
+                let builder_inner = builder.as_mut().unwrap();
+                builder_inner.add(iter.key(), iter.value());
             }
 
             prev_key = Some(current_key.to_vec());
             iter.next()?;
         }
         if let Some(builder) = builder {
-            let sst_id = self.next_sst_id(); // lock dropped here
+            let sst_id = self.next_sst_id();
             let sst = Arc::new(builder.build(
                 sst_id,
                 Some(self.block_cache.clone()),

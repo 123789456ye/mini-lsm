@@ -68,7 +68,7 @@ impl TieredCompactionController {
             size += _snapshot.levels[id].1.len();
             let next_level_size = _snapshot.levels[id + 1].1.len();
             let current_size_ratio = 100.0 * next_level_size as f64 / size as f64;
-            if current_size_ratio >= (100.0 + self.options.size_ratio as f64)
+            if current_size_ratio > (100.0 + self.options.size_ratio as f64)
                 && id + 1 >= self.options.min_merge_width
             {
                 return Some(TieredCompactionTask {
@@ -83,14 +83,11 @@ impl TieredCompactionController {
             }
         }
 
-        if _snapshot.levels.len() == self.options.num_tiers {
-            return None;
-        }
         let num_tiers_to_take = _snapshot
             .levels
             .len()
             .min(self.options.max_merge_width.unwrap_or(usize::MAX));
-        println!("compaction triggered by reducing sorted runs");
+
         Some(TieredCompactionTask {
             tiers: _snapshot
                 .levels
@@ -117,7 +114,6 @@ impl TieredCompactionController {
         let mut levels = Vec::new();
         let mut files_to_remove = Vec::new();
         let mut new_tier_added = false;
-        //snapshot.levels.clear();
 
         for (id, files) in &snapshot.levels {
             if tier_to_remove.remove(id).is_some() {
