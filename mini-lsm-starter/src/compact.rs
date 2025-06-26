@@ -35,7 +35,7 @@ use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
-use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::lsm_storage::{CompactionFilter, LsmStorageInner, LsmStorageState};
 use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
@@ -134,36 +134,76 @@ impl LsmStorageInner {
         mut iter: impl for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
         compact_to_bottom_level: bool,
     ) -> Result<Vec<Arc<SsTable>>> {
-        let mut builder = None;
+        let mut builder = Some(SsTableBuilder::new(self.options.block_size));
         let mut new_sst = Vec::new();
 
+        let mut prev_key: Option<Vec<u8>> = None;
+        let mut same_prev = false;
+        let mut first_key = true;
+        let watermark = self.mvcc().watermark();
+        let compaction_filters = &self.compaction_filters.lock().clone();
+
         while iter.is_valid() {
-            if builder.is_none() {
-                builder = Some(SsTableBuilder::new(self.options.block_size));
-            }
-            let builder_inner = builder.as_mut().unwrap();
-            if compact_to_bottom_level {
-                if !iter.value().is_empty() {
-                    builder_inner.add(iter.key(), iter.value());
-                }
+            let mut flag_add = true;
+
+            let current_key = iter.key().into_inner();
+            same_prev = if let Some(prev) = &prev_key {
+                prev == current_key
             } else {
+                false
+            };
+
+            if !same_prev {
+                first_key = true;
+            }
+
+            if iter.key().ts() <= watermark {
+                if compact_to_bottom_level && iter.value().is_empty() && first_key {
+                    flag_add = false;
+                    first_key = false;
+                } else if !first_key {
+                    flag_add = false;
+                }
+                first_key = false;
+
+                if flag_add == true {
+                    for filter in compaction_filters {
+                        match filter {
+                            CompactionFilter::Prefix(x) => {
+                                if iter.key().key_ref().starts_with(x) {
+                                    flag_add = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if flag_add {
+                let builder_inner = builder.as_mut().unwrap();
+
+                if !same_prev && builder_inner.estimated_size() >= self.options.target_sst_size {
+                    let sst_id = self.next_sst_id();
+                    let old_builder = builder.take().unwrap();
+                    let sst = Arc::new(old_builder.build(
+                        sst_id,
+                        Some(self.block_cache.clone()),
+                        self.path_of_sst(sst_id),
+                    )?);
+                    new_sst.push(sst);
+                    builder = Some(SsTableBuilder::new(self.options.block_size));
+                }
+
+                let builder_inner = builder.as_mut().unwrap();
                 builder_inner.add(iter.key(), iter.value());
             }
-            iter.next()?;
 
-            if builder_inner.estimated_size() >= self.options.target_sst_size {
-                let sst_id = self.next_sst_id();
-                let builder = builder.take().unwrap();
-                let sst = Arc::new(builder.build(
-                    sst_id,
-                    Some(self.block_cache.clone()),
-                    self.path_of_sst(sst_id),
-                )?);
-                new_sst.push(sst);
-            }
+            prev_key = Some(current_key.to_vec());
+            iter.next()?;
         }
         if let Some(builder) = builder {
-            let sst_id = self.next_sst_id(); // lock dropped here
+            let sst_id = self.next_sst_id();
             let sst = Arc::new(builder.build(
                 sst_id,
                 Some(self.block_cache.clone()),
@@ -355,7 +395,6 @@ impl LsmStorageInner {
                 .add_record(&state_lock, ManifestRecord::Compaction(task, new_sst_ids))?;
             self.sync_dir()?;
         }
-        self.dump_structure();
 
         Ok(())
     }

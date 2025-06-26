@@ -24,7 +24,7 @@ use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::key::KeySlice;
+use crate::key::{KeyBytes, KeySlice};
 
 pub struct Wal {
     file: Arc<Mutex<BufWriter<File>>>,
@@ -43,43 +43,51 @@ impl Wal {
         })
     }
 
-    pub fn recover(_path: impl AsRef<Path>, _skiplist: &SkipMap<Bytes, Bytes>) -> Result<Self> {
+    pub fn recover(_path: impl AsRef<Path>, _skiplist: &SkipMap<KeyBytes, Bytes>) -> Result<Self> {
         let path = _path.as_ref();
         let mut file = OpenOptions::new().read(true).write(true).open(_path)?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
         let mut rbuf = buf.as_slice();
         while rbuf.has_remaining() {
-            let key_len = rbuf.get_u16() as usize;
-            let key = Bytes::copy_from_slice(&rbuf[..key_len]);
-            rbuf.advance(key_len);
+            let batch_size = rbuf.get_u32_le() as usize;
+            let mut batch_buf = &rbuf[..batch_size];
+            while batch_buf.has_remaining() {
+                let key_len = batch_buf.get_u16() as usize;
+                let key = Bytes::copy_from_slice(&batch_buf[..key_len]);
+                batch_buf.advance(key_len);
+                let ts = batch_buf.get_u64();
 
-            let value_len = rbuf.get_u16() as usize;
-            let value = Bytes::copy_from_slice(&rbuf[..value_len]);
-            rbuf.advance(value_len);
-            _skiplist.insert(key, value);
+                let value_len = batch_buf.get_u16() as usize;
+                let value = Bytes::copy_from_slice(&batch_buf[..value_len]);
+                batch_buf.advance(value_len);
+                _skiplist.insert(KeyBytes::from_bytes_with_ts(key, ts), value);
+            }
+            rbuf.advance(batch_size);
         }
         Ok(Self {
             file: Arc::new(Mutex::new(BufWriter::new(file))),
         })
     }
 
-    pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        let mut file = self.file.lock();
-        let mut buf = Vec::new();
-
-        buf.put_u16(_key.len() as u16);
-        buf.put_slice(_key);
-        buf.put_u16(_value.len() as u16);
-        buf.put_slice(_value);
-
-        file.write_all(&buf)?;
-        Ok(())
+    pub fn put(&self, _key: KeySlice, _value: &[u8]) -> Result<()> {
+        self.put_batch(&[(_key, _value)])
     }
 
     /// Implement this in week 3, day 5; if you want to implement this earlier, use `&[u8]` as the key type.
     pub fn put_batch(&self, _data: &[(KeySlice, &[u8])]) -> Result<()> {
-        unimplemented!()
+        let mut file = self.file.lock();
+        let mut buf = Vec::new();
+        for (_key, _value) in _data {
+            buf.put_u16(_key.key_len() as u16);
+            buf.put_slice(_key.key_ref());
+            buf.put_u64(_key.ts());
+            buf.put_u16(_value.len() as u16);
+            buf.put_slice(_value);
+        }
+        file.write_all(&(buf.len() as u32).to_le_bytes())?;
+        file.write_all(&buf)?;
+        Ok(())
     }
 
     pub fn sync(&self) -> Result<()> {

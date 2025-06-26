@@ -126,7 +126,7 @@ impl BlockIterator {
             let m = (l + r) / 2;
             let offset = self.block.offsets[m] as usize;
             let (mid_key, _) = self.decode_entry(&self.block.data, offset);
-            match mid_key.raw_ref().cmp(key.raw_ref()) {
+            match mid_key.key_ref().cmp(key.key_ref()) {
                 std::cmp::Ordering::Less => {
                     l = m + 1;
                 }
@@ -154,14 +154,19 @@ impl BlockIterator {
         let rest_start = offset + 4;
         let rest_end = rest_start + rest_len;
 
-        let mut full_key = self.first_key.raw_ref()[..overlap].to_vec();
+        let mut full_key = self.first_key.key_ref()[..overlap].to_vec();
         full_key.extend_from_slice(&data[rest_start..rest_end]);
+        let ts = u64::from_le_bytes(data[rest_end..rest_end + 8].try_into().unwrap());
+        let rest_end = rest_end + 8;
 
         let vlen_offset = rest_end;
         let vlen = u16::from_le_bytes([data[vlen_offset], data[vlen_offset + 1]]) as usize;
         let value_start = vlen_offset + 2;
         let value_end = value_start + vlen;
 
-        (KeyVec::from_vec(full_key), (value_start, value_end))
+        (
+            KeyVec::from_vec_with_ts(full_key, ts),
+            (value_start, value_end),
+        )
     }
 }

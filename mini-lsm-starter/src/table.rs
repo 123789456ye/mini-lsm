@@ -50,38 +50,49 @@ impl BlockMeta {
     /// in order to help keep track of `first_key` when decoding from the same buffer in the future.
     pub fn encode_block_meta(
         block_meta: &[BlockMeta],
+        max_ts: u64,
         #[allow(clippy::ptr_arg)] // remove this allow after you finish
         buf: &mut Vec<u8>,
     ) {
         buf.put_u32_le(block_meta.len() as u32);
         for meta in block_meta {
             buf.put_u32_le(meta.offset as u32);
-            buf.put_u16_le(meta.first_key.len() as u16);
-            buf.put(meta.first_key.raw_ref());
-            buf.put_u16_le(meta.last_key.len() as u16);
-            buf.put(meta.last_key.raw_ref());
+            buf.put_u16_le(meta.first_key.key_len() as u16);
+            buf.put(meta.first_key.key_ref());
+            buf.put_u64_le(meta.first_key.ts());
+            buf.put_u16_le(meta.last_key.key_len() as u16);
+            buf.put(meta.last_key.key_ref());
+            buf.put_u64_le(meta.last_key.ts());
         }
+        buf.put_u64(max_ts);
     }
 
     /// Decode block meta from a buffer.
-    pub fn decode_block_meta(mut buf: impl Buf) -> Vec<BlockMeta> {
+    pub fn decode_block_meta(mut buf: impl Buf) -> (Vec<BlockMeta>, u64) {
         let len = buf.get_u32_le();
         let mut block_meta = Vec::with_capacity(len as usize);
 
         for i in 0..len {
             let offset = buf.get_u32_le() as usize;
+
             let first_len = buf.get_u16_le();
-            let first_key = KeyBytes::from_bytes(buf.copy_to_bytes(first_len as usize));
+            let first_key_bytes = buf.copy_to_bytes(first_len as usize);
+            let first_ts = buf.get_u64_le();
+            let first_key = KeyBytes::from_bytes_with_ts(first_key_bytes, first_ts);
+
             let last_len = buf.get_u16_le();
-            let last_key = KeyBytes::from_bytes(buf.copy_to_bytes(last_len as usize));
+            let last_key_bytes = buf.copy_to_bytes(last_len as usize);
+            let last_ts = buf.get_u64_le();
+            let last_key = KeyBytes::from_bytes_with_ts(last_key_bytes, last_ts);
+
             block_meta.push(BlockMeta {
                 offset,
                 first_key,
                 last_key,
             })
         }
-
-        block_meta
+        let max_ts = buf.get_u64();
+        (block_meta, max_ts)
     }
 }
 
@@ -155,7 +166,7 @@ impl SsTable {
         let meta_len = len - 4 - block_meta_offset as u64;
         let meta_buf_vec = file.read(block_meta_offset as u64, meta_len)?;
         let meta_buf = meta_buf_vec.as_slice();
-        let block_meta = BlockMeta::decode_block_meta(meta_buf);
+        let (block_meta, max_ts) = BlockMeta::decode_block_meta(meta_buf);
         Ok(SsTable {
             file,
             block_meta_offset,
@@ -164,7 +175,7 @@ impl SsTable {
             first_key: block_meta.first().unwrap().first_key.clone(),
             last_key: block_meta.last().unwrap().last_key.clone(),
             bloom: Some(bloom_filter),
-            max_ts: 0,
+            max_ts,
             block_meta,
         })
     }
