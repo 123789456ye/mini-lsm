@@ -517,43 +517,29 @@ impl LsmStorageInner {
     pub fn write_batch<T: AsRef<[u8]>>(&self, _batch: &[WriteBatchRecord<T>]) -> Result<()> {
         let _lck = self.mvcc().write_lock.lock();
         let ts = self.mvcc().latest_commit_ts() + 1;
+        let mut batch_data = Vec::new();
         for record in _batch {
             match record {
                 WriteBatchRecord::Put(_key, _value) => {
-                    let state = self.state.read();
-
-                    let res = state
-                        .memtable
-                        .put(KeySlice::from_slice(_key.as_ref(), ts), _value.as_ref());
-
-                    if state.memtable.approximate_size() > self.options.target_sst_size {
-                        drop(state);
-
-                        let state_lock = self.state_lock.lock();
-                        let state = self.state.read();
-                        if state.memtable.approximate_size() > self.options.target_sst_size {
-                            drop(state);
-                            self.force_freeze_memtable(&state_lock)?;
-                        }
-                    }
+                    batch_data.push((KeySlice::from_slice(_key.as_ref(), ts), _value.as_ref()));
                 }
                 WriteBatchRecord::Del(_key) => {
-                    let state = self.state.read();
+                    batch_data.push((KeySlice::from_slice(_key.as_ref(), ts), &[]));
+                }
+            }
+        }
+        {
+            let state = self.state.read();
+            state.memtable.put_batch(&batch_data)?;
 
-                    let res = state
-                        .memtable
-                        .put(KeySlice::from_slice(_key.as_ref(), ts), &[]);
+            if state.memtable.approximate_size() > self.options.target_sst_size {
+                drop(state);
 
-                    if state.memtable.approximate_size() > self.options.target_sst_size {
-                        drop(state);
-
-                        let state_lock = self.state_lock.lock();
-                        let state = self.state.read();
-                        if state.memtable.approximate_size() > self.options.target_sst_size {
-                            drop(state);
-                            self.force_freeze_memtable(&state_lock)?;
-                        }
-                    }
+                let state_lock = self.state_lock.lock();
+                let state = self.state.read();
+                if state.memtable.approximate_size() > self.options.target_sst_size {
+                    drop(state);
+                    self.force_freeze_memtable(&state_lock)?;
                 }
             }
         }
