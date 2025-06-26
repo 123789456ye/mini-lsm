@@ -17,11 +17,12 @@
 
 use std::{
     collections::HashSet,
+    fmt::write,
     ops::Bound,
     sync::{Arc, atomic::AtomicBool},
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use farmhash::hash32;
@@ -35,6 +36,7 @@ use crate::{
     lsm_iterator::{FusedIterator, LsmIterator},
     lsm_storage::{LsmStorageInner, WriteBatchRecord},
     mem_table::map_bound,
+    mvcc::CommittedTxnData,
 };
 
 pub struct Transaction {
@@ -50,6 +52,11 @@ impl Transaction {
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         if self.committed.load(std::sync::atomic::Ordering::SeqCst) {
             panic!("Transaction Commited");
+        }
+        if let Some(guard) = &self.key_hashes {
+            let mut state = guard.lock();
+            let read_set = &mut state.1;
+            read_set.insert(farmhash::hash32(key));
         }
         if let Some(entry) = self.local_storage.get(key) {
             if entry.value().is_empty() {
@@ -98,6 +105,11 @@ impl Transaction {
         }
         self.local_storage
             .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
+        if let Some(guard) = &self.key_hashes {
+            let mut state = guard.lock();
+            let write_set = &mut state.0;
+            write_set.insert(farmhash::hash32(key));
+        }
     }
 
     pub fn delete(&self, key: &[u8]) {
@@ -106,12 +118,35 @@ impl Transaction {
         }
         self.local_storage
             .insert(Bytes::copy_from_slice(key), Bytes::new());
+        if let Some(guard) = &self.key_hashes {
+            let mut state = guard.lock();
+            let write_set = &mut state.0;
+            write_set.insert(farmhash::hash32(key));
+        }
     }
 
     pub fn commit(&self) -> Result<()> {
         self.committed
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let mtx = self.inner.mvcc().commit_lock.lock();
+        let serialize_check;
+        if let Some(guard) = &self.key_hashes {
+            let mut state = guard.lock();
+            let (write_set, read_set) = &*state;
+            if !write_set.is_empty() {
+                let committed_txns = self.inner.mvcc().committed_txns.lock();
+                for (_, data) in committed_txns.range((self.read_ts + 1)..) {
+                    for key_hash in read_set {
+                        if data.key_hashes.contains(key_hash) {
+                            bail!("Serializable Check Failed");
+                        }
+                    }
+                }
+            }
+            serialize_check = true;
+        } else {
+            serialize_check = false;
+        }
         let batch = self
             .local_storage
             .iter()
@@ -123,8 +158,31 @@ impl Transaction {
                 }
             })
             .collect::<Vec<_>>();
-        self.inner.write_batch(&batch)?;
+        let ts = self.inner.write_batch_inner(&batch)?;
 
+        if serialize_check {
+            let mut committed_txns = self.inner.mvcc().committed_txns.lock();
+            let mut state = self.key_hashes.as_ref().unwrap().lock();
+            let write_set = &mut state.0;
+
+            committed_txns.insert(
+                ts,
+                CommittedTxnData {
+                    key_hashes: std::mem::take(write_set),
+                    read_ts: self.read_ts,
+                    commit_ts: ts,
+                },
+            );
+
+            let watermark = self.inner.mvcc().watermark();
+            while let Some(entry) = committed_txns.first_entry() {
+                if *entry.key() < watermark {
+                    entry.remove();
+                } else {
+                    break;
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -196,6 +254,13 @@ impl TxnIterator {
         while it.iter.is_valid() && it.iter.value().is_empty() {
             it.iter.next()?;
         }
+        if it.iter.is_valid() {
+            if let Some(guard) = &it._txn.key_hashes {
+                let mut state = guard.lock();
+                let read_set = &mut state.1;
+                read_set.insert(farmhash::hash32(it.iter.key()));
+            }
+        }
         Ok(it)
     }
 }
@@ -222,6 +287,13 @@ impl StorageIterator for TxnIterator {
         self.iter.next()?;
         while self.iter.is_valid() && self.iter.value().is_empty() {
             self.iter.next()?;
+        }
+        if self.iter.is_valid() {
+            if let Some(guard) = &self._txn.key_hashes {
+                let mut state = guard.lock();
+                let read_set = &mut state.1;
+                read_set.insert(farmhash::hash32(self.iter.key()));
+            }
         }
         Ok(())
     }
