@@ -35,7 +35,7 @@ use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
-use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::lsm_storage::{CompactionFilter, LsmStorageInner, LsmStorageState};
 use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
@@ -141,6 +141,7 @@ impl LsmStorageInner {
         let mut same_prev = false;
         let mut first_key = true;
         let watermark = self.mvcc().watermark();
+        let compaction_filters = &self.compaction_filters.lock().clone();
 
         while iter.is_valid() {
             let mut flag_add = true;
@@ -164,6 +165,19 @@ impl LsmStorageInner {
                     flag_add = false;
                 }
                 first_key = false;
+
+                if flag_add == true {
+                    for filter in compaction_filters {
+                        match filter {
+                            CompactionFilter::Prefix(x) => {
+                                if iter.key().key_ref().starts_with(x) {
+                                    flag_add = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             if flag_add {
